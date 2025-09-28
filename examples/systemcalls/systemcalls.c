@@ -1,4 +1,9 @@
 #include "systemcalls.h"
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <fcntl.h>
+#include <errno.h>
 
 /**
  * @param cmd the command to execute with system()
@@ -17,7 +22,8 @@ bool do_system(const char *cmd)
  *   or false() if it returned a failure
 */
 
-    return true;
+    int ret = system(cmd);
+    return (ret == 0);
 }
 
 /**
@@ -58,10 +64,26 @@ bool do_exec(int count, ...)
  *   as second argument to the execv() command.
  *
 */
-
     va_end(args);
 
-    return true;
+    pid_t pid = fork();
+    if (pid == 0) // in child process
+    {
+        execv(command[0], command);
+        exit(errno);
+    }
+    else if (pid > 0) // parent
+    {
+        int status;
+        wait(&status);
+        if (WIFEXITED(status))
+        {
+            int ret = WEXITSTATUS(status);
+            return (ret == 0);
+        }
+    }
+
+    return false;
 }
 
 /**
@@ -92,8 +114,28 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
  *   The rest of the behaviour is same as do_exec()
  *
 */
-
     va_end(args);
 
-    return true;
+    pid_t pid = fork();
+    if (pid == 0) // in child process
+    {
+        int fd = open(outputfile, O_WRONLY|O_TRUNC|O_CREAT, 0644);
+        if (fd < 0) return -1;
+        if (dup2(fd, 1) < 0) return -1;
+
+        execv(command[0], command);
+        exit(errno);
+    }
+    else if (pid > 0) // parent
+    {
+        int status;
+        wait(&status);
+        if (WIFEXITED(status))
+        {
+            int ret = WEXITSTATUS(status);
+            return (ret == 0);
+        }
+    }
+
+    return false;
 }
