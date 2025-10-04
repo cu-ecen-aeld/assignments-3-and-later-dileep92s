@@ -12,7 +12,6 @@ BUSYBOX_VERSION=1_33_1
 FINDER_APP_DIR=$(realpath $(dirname $0))
 ARCH=arm64
 CROSS_COMPILE=aarch64-none-linux-gnu-
-TOOLCHAIN=~/linux/toolchain
 
 if [ $# -lt 1 ]
 then
@@ -85,6 +84,7 @@ ${CROSS_COMPILE}readelf -a bin/busybox | grep "program interpreter"
 ${CROSS_COMPILE}readelf -a bin/busybox | grep "Shared library"
 
 # TODO: Add library dependencies to rootfs -- done
+TOOLCHAIN=$(dirname $(which ${CROSS_COMPILE}gcc))/../aarch64-none-linux-gnu/
 find $TOOLCHAIN -name "ld-linux-aarch64.so.1" -exec cp {} ${OUTDIR}/rootfs/lib/ \;
 find $TOOLCHAIN -name "libm.so.6" -exec cp {} ${OUTDIR}/rootfs/lib64/ \;
 find $TOOLCHAIN -name "libresolv.so.2" -exec cp {} ${OUTDIR}/rootfs/lib64/ \;
