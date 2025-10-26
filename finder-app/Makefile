@@ -1,10 +1,9 @@
+.PHONY: all clean
 
-.PHONY: all
-
-CROSS_COMPILE ?= gcc
+CC := $(CROSS_COMPILE)gcc
 
 all:
-	${CROSS_COMPILE} writer.c -o writer
+	$(CC) writer.c -o writer
 
 clean:
 	rm -f writer
