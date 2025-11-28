@@ -9,32 +9,84 @@
 #include <arpa/inet.h>
 #include <signal.h>
 #include <fcntl.h>
+#include <pthread.h>
+#include <time.h>
+#include <string.h>
 
 #define PORT "9000" // Port to listen on
+#define ERROR (-1)
 
-int sockfd = -1, new_fd = -1;
 int running = 0;
+int servfd = ERROR;
+int logfd = ERROR;
+pthread_mutex_t log_mtx;
 
-void cleanup()
+struct ConnInfo
 {
-    if (new_fd != -1)
-        close(new_fd);
-    if (sockfd != -1)
-        close(sockfd);
-    running = 0;
+    struct sockaddr_in their_addr;
+    int recvfd;
+};
+
+struct Node
+{
+    struct Node *next;
+    struct ConnInfo conn;
+    pthread_t thread;
+};
+
+void writelog(const char *buf, size_t len)
+{
+    if (logfd != ERROR)
+    {
+        pthread_mutex_lock(&log_mtx);
+        write(logfd, buf, len);
+        pthread_mutex_unlock(&log_mtx);
+    }
+}
+
+void readlog(char *buf, size_t len)
+{
+    if (logfd != ERROR)
+    {
+        pthread_mutex_lock(&log_mtx);
+        read(logfd, buf, len);
+        pthread_mutex_unlock(&log_mtx);
+    }
 }
 
 void signalhandler(int signo)
 {
     printf("Caught signal, exiting\n");
     syslog(LOG_INFO, "Caught signal, exiting");
-    cleanup();
+
+    if (servfd != ERROR)
+        close(servfd);
+    running = 0;
 }
 
-void sendreply(int fd, int new_fd)
+void timeouthandler(int signo)
 {
-    off_t fsize = lseek(fd, 0, SEEK_CUR);
-    lseek(fd, 0, SEEK_SET);
+    time_t now;
+    struct tm *local_info;
+    const char *format_string = "timestamp:%a, %d %b %Y %H:%M:%S %z\n";
+    time(&now);
+    local_info = localtime(&now);
+    char timestamp[200];
+    strftime(timestamp, sizeof(timestamp), format_string, local_info);
+    printf("%s\n", timestamp);
+    writelog(timestamp, strlen(timestamp));
+    alarm(10);
+}
+
+void sendreply(int recvfd)
+{
+    if (logfd == ERROR)
+        return;
+
+    pthread_mutex_lock(&log_mtx);
+    off_t fsize = lseek(logfd, 0, SEEK_CUR);
+    lseek(logfd, 0, SEEK_SET);
+    pthread_mutex_unlock(&log_mtx);
 
     uint8_t *data = malloc(fsize);
     if (data == NULL)
@@ -43,9 +95,9 @@ void sendreply(int fd, int new_fd)
         return;
     }
 
-    read(fd, data, fsize);
+    readlog(data, fsize);
 
-    size_t sent = send(new_fd, data, fsize, 0);
+    size_t sent = send(recvfd, data, fsize, 0);
     if (sent != fsize)
     {
         perror("send");
@@ -60,14 +112,63 @@ void sendreply(int fd, int new_fd)
     free(data);
 }
 
+void *handle(void *arg)
+{
+
+    if (arg == NULL)
+        return NULL;
+
+    struct ConnInfo *info = (struct ConnInfo *)arg;
+    int recvfd = info->recvfd;
+    struct sockaddr_in their_addr = info->their_addr;
+    int bytes_received;
+    char client_ip[INET6_ADDRSTRLEN];
+    char buf[1024];
+
+    // Convert client IP to string
+    if (inet_ntop(AF_INET, &their_addr.sin_addr, client_ip, sizeof(client_ip)) == NULL)
+    {
+        perror("inet_ntop");
+        return NULL;
+    }
+
+    printf("Accepted connection from %s\n", client_ip);
+    syslog(LOG_INFO, "Accepted connection from %s", client_ip);
+
+    while (running)
+    {
+        bytes_received = recv(recvfd, buf, sizeof buf, 0);
+        if (bytes_received > 0)
+        {
+            printf("\nServer received[%d]:", bytes_received);
+            writelog(buf, bytes_received);
+
+            for (int i = 0; i < bytes_received; i++)
+            {
+                printf("%c", buf[i]);
+                if ('\n' == buf[i])
+                {
+                    sendreply(recvfd);
+                }
+            }
+        }
+        else
+        {
+            break;
+        }
+    }
+
+    printf("Closed connection from %s\n", client_ip);
+    syslog(LOG_INFO, "Closed connection from %s", client_ip);
+    close(recvfd);
+    return NULL;
+}
+
 int main(int argc, const char **argv)
 {
     struct addrinfo hints, *res;
     struct sockaddr_in their_addr;
     socklen_t addr_size;
-    char buf[1024];
-    int bytes_received;
-    char client_ip[INET6_ADDRSTRLEN];
 
     int run_as_daemon = 0;
     if (argc > 1 && strcmp(argv[1], "-d") == 0)
@@ -80,6 +181,12 @@ int main(int argc, const char **argv)
     signal(SIGINT, signalhandler);
     signal(SIGTERM, signalhandler);
 
+    if (pthread_mutex_init(&log_mtx, NULL) != 0)
+    {
+        perror("mutex");
+        return ERROR;
+    }
+
     // Prepare hints
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_UNSPEC;     // IPv4 or IPv6
@@ -89,39 +196,39 @@ int main(int argc, const char **argv)
     if (getaddrinfo(NULL, PORT, &hints, &res) != 0)
     {
         perror("getaddrinfo");
-        return -1;
+        return ERROR;
     }
 
-    sockfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-    if (sockfd == -1)
+    servfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (servfd == ERROR)
     {
         perror("socket");
-        return -1;
+        return ERROR;
     }
 
-    if (bind(sockfd, res->ai_addr, res->ai_addrlen) == -1)
+    if (bind(servfd, res->ai_addr, res->ai_addrlen) == ERROR)
     {
         perror("bind");
-        cleanup();
-        return -1;
+        close(servfd);
+        return ERROR;
     }
 
     freeaddrinfo(res);
 
-    if (listen(sockfd, 10) == -1)
+    if (listen(servfd, 10) == ERROR)
     {
         perror("listen");
-        cleanup();
-        return -1;
+        close(servfd);
+        return ERROR;
     }
 
     system("mkdir -p /var/tmp/");
-    int fd = open("/var/tmp/aesdsocketdata", O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
-    if (fd < 0)
+    logfd = open("/var/tmp/aesdsocketdata", O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+    if (logfd < 0)
     {
         perror("failed to open file!");
-        cleanup();
-        return -1;
+        close(servfd);
+        return ERROR;
     }
 
     if (run_as_daemon)
@@ -132,20 +239,6 @@ int main(int argc, const char **argv)
             printf("exiting parent\n");
             exit(0);
         }
-    }
-
-    running = 1;
-    while (running)
-    {
-
-        printf("Server: waiting for connections...\n");
-
-        addr_size = sizeof their_addr;
-        new_fd = accept(sockfd, (struct sockaddr *)&their_addr, &addr_size);
-        if (new_fd == -1)
-        {
-            perror("accept");
-        }
         else
         {
             close(STDIN_FILENO);
@@ -155,47 +248,51 @@ int main(int argc, const char **argv)
             open("/dev/null", O_RDONLY); // stdin
             open("/dev/null", O_WRONLY); // stdout
             open("/dev/null", O_RDWR);   // stderr
-
-            // Convert client IP to string
-            if (inet_ntop(AF_INET, &their_addr.sin_addr, client_ip, sizeof(client_ip)) == NULL)
-            {
-                perror("inet_ntop");
-                continue;
-            }
-
-            printf("Accepted connection from %s\n", client_ip);
-            syslog(LOG_INFO, "Accepted connection from %s", client_ip);
-
-            while (running)
-            {
-                bytes_received = recv(new_fd, buf, sizeof buf, 0);
-                if (bytes_received > 0)
-                {
-                    printf("\nServer received[%d]:", bytes_received);
-                    write(fd, buf, bytes_received);
-
-                    for (int i = 0; i < bytes_received; i++)
-                    {
-                        printf("%c", buf[i]);
-                        if ('\n' == buf[i])
-                        {
-                            sendreply(fd, new_fd);
-                            // break;
-                        }
-                    }
-                }
-                else
-                {
-                    break;
-                }
-            }
-
-            printf("Closed connection from %s\n", client_ip);
-            syslog(LOG_INFO, "Closed connection from %s", client_ip);
         }
     }
 
-    close(fd);
-    cleanup();
+    printf("pid : %d\n", getpid());
+
+    alarm(10);
+    signal(SIGALRM, timeouthandler);
+
+    struct Node *head = NULL;
+
+    running = 1;
+    while (running)
+    {
+        printf("Server: waiting for connections...\n");
+
+        addr_size = sizeof their_addr;
+        int recvfd = accept(servfd, (struct sockaddr *)&their_addr, &addr_size);
+        if (recvfd == ERROR)
+        {
+            perror("accept");
+        }
+        else
+        {
+
+            struct Node *node = malloc(sizeof(struct Node));
+            node->next = head;
+            node->conn.recvfd = recvfd;
+            node->conn.their_addr = their_addr;
+            pthread_create(&node->thread, NULL, handle, &node->conn);
+            head = node;
+        }
+    }
+
+    while (head != NULL)
+    {
+        pthread_join(head->thread, NULL);
+        struct Node *next = head->next;
+        free(head);
+        head = next;
+    }
+
+    close(servfd);
+    fsync(logfd);
+    close(logfd);
+    pthread_mutex_destroy(&log_mtx);
+
     return 0;
 }
