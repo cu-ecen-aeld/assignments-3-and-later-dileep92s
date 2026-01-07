@@ -222,12 +222,11 @@ int main(int argc, const char **argv)
         return ERROR;
     }
 
-    #if USE_AESD_CHAR_DEVICE
-    logfd = open("/dev/aesdchar", O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
-    #else
+    #if USE_AESD_CHAR_DEVICE == 0
     system("mkdir -p /var/tmp/");
     logfd = open("/var/tmp/aesdsocketdata", O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
     #endif
+
     if (logfd < 0)
     {
         perror("failed to open file!");
@@ -257,8 +256,7 @@ int main(int argc, const char **argv)
 
     printf("pid : %d\n", getpid());
 
-    #if USE_AESD_CHAR_DEVICE
-    #else
+    #if USE_AESD_CHAR_DEVICE == 0
     alarm(10);
     signal(SIGALRM, timeouthandler);
     #endif
@@ -278,13 +276,18 @@ int main(int argc, const char **argv)
         }
         else
         {
-
+            #if USE_AESD_CHAR_DEVICE
+            logfd = open("/dev/aesdchar", O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+            #endif
             struct Node *node = malloc(sizeof(struct Node));
             node->next = head;
             node->conn.recvfd = recvfd;
             node->conn.their_addr = their_addr;
             pthread_create(&node->thread, NULL, handle, &node->conn);
             head = node;
+            #if USE_AESD_CHAR_DEVICE
+            close(logfd);
+            #endif
         }
     }
 
@@ -297,8 +300,10 @@ int main(int argc, const char **argv)
     }
 
     close(servfd);
+    #if USE_AESD_CHAR_DEVICE == 0
     fsync(logfd);
     close(logfd);
+    #endif
     pthread_mutex_destroy(&log_mtx);
 
     return 0;
