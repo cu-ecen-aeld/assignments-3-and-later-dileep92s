@@ -10,6 +10,10 @@
 
 #ifdef __KERNEL__
 #include <linux/string.h>
+#include <linux/mutex.h>
+#include <linux/slab.h>
+#include <asm/uaccess.h>
+static DEFINE_MUTEX(lock);
 #else
 #include <string.h>
 #include <pthread.h>
@@ -32,10 +36,14 @@ pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 struct aesd_buffer_entry *aesd_circular_buffer_find_entry_offset_for_fpos(struct aesd_circular_buffer *buffer,
                                                                           size_t char_offset, size_t *entry_offset_byte_rtn)
 {
-    /**
-     * TODO: implement per description
-     */
+/**
+ * TODO: implement per description
+ */
+#ifdef __KERNEL__
+    mutex_lock(&lock);
+#else
     pthread_mutex_lock(&lock);
+#endif
 
     uint8_t idx = buffer->out_offs;
     uint8_t cnt = 0;
@@ -57,30 +65,102 @@ struct aesd_buffer_entry *aesd_circular_buffer_find_entry_offset_for_fpos(struct
         idx %= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
         cnt++;
     }
+#ifdef __KERNEL__
+    mutex_unlock(&lock);
+#else
     pthread_mutex_unlock(&lock);
+#endif
     return ret;
 }
 
+size_t aesd_circular_buffer_find_entry_offset_for_fpos_and_copy(struct aesd_circular_buffer *buffer,
+                                                                size_t char_offset, char *outbuffer, size_t count)
+{
+
+#ifdef __KERNEL__
+    mutex_lock(&lock);
+#else
+    pthread_mutex_lock(&lock);
+#endif
+
+    uint8_t idx = buffer->out_offs;
+    uint8_t cnt = 0;
+    size_t curr_offset = 0;
+    size_t entry_offset_byte = 0;
+    struct aesd_buffer_entry *entry = buffer->entry;
+    size_t byteswritten = 0;
+
+    while ((cnt < AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED) && entry[idx].size)
+    {
+        if (char_offset < curr_offset + entry[idx].size)
+        {
+            entry_offset_byte = char_offset - curr_offset;
+            break;
+        }
+
+        curr_offset += entry[idx].size;
+        idx += 1;
+        idx %= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+        cnt++;
+    }
+
+    if (cnt == AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)
+        return byteswritten;
+
+    cnt = 0;
+    while ((cnt < AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED) && entry[idx].size && byteswritten < count)
+    {
+        size_t bytestowrite = entry[idx].size - entry_offset_byte;
+        bytestowrite = (count - byteswritten) < bytestowrite ? (count - byteswritten) : bytestowrite;
+        memcpy(outbuffer + byteswritten, entry[idx].buffptr + entry_offset_byte, bytestowrite);
+        byteswritten += bytestowrite;
+        entry_offset_byte = 0;
+        idx += 1;
+        idx %= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+        cnt++;
+    }
+
+#ifdef __KERNEL__
+    mutex_unlock(&lock);
+#else
+    pthread_mutex_unlock(&lock);
+#endif
+    return byteswritten;
+}
+
 /**
-* Adds entry @param add_entry to @param buffer in the location specified in buffer->in_offs.
-* If the buffer was already full, overwrites the oldest entry and advances buffer->out_offs to the
-* new start location.
-* Any necessary locking must be handled by the caller
-* Any memory referenced in @param add_entry must be allocated by and/or must have a lifetime managed by the caller.
-*/
+ * Adds entry @param add_entry to @param buffer in the location specified in buffer->in_offs.
+ * If the buffer was already full, overwrites the oldest entry and advances buffer->out_offs to the
+ * new start location.
+ * Any necessary locking must be handled by the caller
+ * Any memory referenced in @param add_entry must be allocated by and/or must have a lifetime managed by the caller.
+ */
 void aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const struct aesd_buffer_entry *add_entry)
 {
     /**
      * TODO: implement per description
      */
 
+#ifdef __KERNEL__
+    mutex_lock(&lock);
+#else
     pthread_mutex_lock(&lock);
+#endif
 
     struct aesd_buffer_entry *entry = buffer->entry;
+
+#ifdef __KERNEL__
+    if (entry[buffer->in_offs].buffptr)
+    {
+        kfree(entry[buffer->in_offs].buffptr);
+        entry[buffer->in_offs].buffptr = NULL;
+    }
+#endif
+
     entry[buffer->in_offs].buffptr = add_entry->buffptr;
     entry[buffer->in_offs].size = add_entry->size;
     buffer->in_offs += 1;
-
+    buffer->in_offs %= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
 
     if (buffer->full)
     {
@@ -88,18 +168,23 @@ void aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const s
     }
     else
     {
-        buffer->in_offs %= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
         if (buffer->in_offs == buffer->out_offs)
             buffer->full = true;
     }
+#ifdef __KERNEL__
+    mutex_unlock(&lock);
+#else
     pthread_mutex_unlock(&lock);
+#endif
 }
 
 /**
-* Initializes the circular buffer described by @param buffer to an empty struct
-*/
+ * Initializes the circular buffer described by @param buffer to an empty struct
+ */
 void aesd_circular_buffer_init(struct aesd_circular_buffer *buffer)
 {
+#ifndef __KERNEL__
     pthread_mutex_init(&lock, NULL);
-    memset(buffer,0,sizeof(struct aesd_circular_buffer));
+#endif
+    memset(buffer, 0, sizeof(struct aesd_circular_buffer));
 }
