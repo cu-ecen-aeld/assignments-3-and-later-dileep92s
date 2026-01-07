@@ -225,14 +225,14 @@ int main(int argc, const char **argv)
     #if USE_AESD_CHAR_DEVICE == 0
     system("mkdir -p /var/tmp/");
     logfd = open("/var/tmp/aesdsocketdata", O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
-    #endif
-
     if (logfd < 0)
     {
         perror("failed to open file!");
         close(servfd);
         return ERROR;
     }
+    #endif
+
 
     if (run_as_daemon)
     {
