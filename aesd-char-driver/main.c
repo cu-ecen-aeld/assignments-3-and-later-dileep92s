@@ -107,12 +107,20 @@ int aesd_release(struct inode *inode, struct file *filp)
     return 0;
 }
 
+size_t get_available_data_size(void)
+{
+    size_t retval = 0;
+    for (int i = 0; i < AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED; i++)
+        retval += circular_buffer.entry[i].size;
+    return retval;
+}
+
 ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
                   loff_t *f_pos)
 {
     PDEBUG("read %zu bytes with offset %lld", count, *f_pos);
 
-    if (*f_pos == count)
+    if (*f_pos >= get_available_data_size())
         return 0;
 
     ssize_t retval = 0;
@@ -122,7 +130,7 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
     kfree(tmp);
 
     PDEBUG("read complete %zu ", retval);
-    *f_pos += count;
+    *f_pos += retval;
     return retval;
 }
 
@@ -183,12 +191,31 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
     return retval;
 }
 
+loff_t aesd_seek(struct file *filp, loff_t off, int type)
+{
+    switch (type)
+    {
+    case SEEK_CUR:
+        size_t avail = get_available_data_size();
+        loff_t pos = avail + off;
+        filp->f_pos = pos < avail ? pos : avail;
+        break;
+    case SEEK_SET:
+        filp->f_pos = off;
+        break;
+    default:
+        break;
+    }
+    return filp->f_pos;
+}
+
 struct file_operations aesd_fops = {
     .owner = THIS_MODULE,
     .read = aesd_read,
     .write = aesd_write,
     .open = aesd_open,
     .release = aesd_release,
+    .llseek = aesd_seek,
 };
 
 static int aesd_setup_cdev(struct aesd_dev *dev)
