@@ -222,8 +222,12 @@ int main(int argc, const char **argv)
         return ERROR;
     }
 
-    system("mkdir -p /var/tmp/");
+    #if USE_AESD_CHAR_DEVICE
     logfd = open("/dev/aesdchar", O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+    #else
+    system("mkdir -p /var/tmp/");
+    logfd = open("/var/tmp/aesdsocketdata", O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+    #endif
     if (logfd < 0)
     {
         perror("failed to open file!");
@@ -253,8 +257,11 @@ int main(int argc, const char **argv)
 
     printf("pid : %d\n", getpid());
 
-    // alarm(10);
-    // signal(SIGALRM, timeouthandler);
+    #if USE_AESD_CHAR_DEVICE
+    #else
+    alarm(10);
+    signal(SIGALRM, timeouthandler);
+    #endif
 
     struct Node *head = NULL;
 
