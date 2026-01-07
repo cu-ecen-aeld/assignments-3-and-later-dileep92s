@@ -193,6 +193,8 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
 
 loff_t aesd_seek(struct file *filp, loff_t off, int type)
 {
+    PDEBUG("seek type %zu with offset %lld", type, off);
+
     switch (type)
     {
     case SEEK_CUR:
