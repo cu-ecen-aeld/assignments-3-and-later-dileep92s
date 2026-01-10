@@ -12,6 +12,8 @@
 #include <pthread.h>
 #include <time.h>
 #include <string.h>
+#include <stdbool.h>
+#include "aesd_ioctl.h"
 
 #define PORT "9000" // Port to listen on
 #define ERROR (-1)
@@ -34,34 +36,34 @@ struct Node
     pthread_t thread;
 };
 
-void writelog(const char *buf, size_t len)
+int getdev()
 {
 #if USE_AESD_CHAR_DEVICE
     if (logfd == ERROR)
-        logfd = open("/dev/aesdchar", O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
-#endif
-
-    if (logfd != ERROR)
     {
-        pthread_mutex_lock(&log_mtx);
-        write(logfd, buf, len);
-        pthread_mutex_unlock(&log_mtx);
+        logfd = open("/dev/aesdchar", O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+        if (logfd < 0)
+        {
+            perror("failed to open file!");
+            exit(ERROR);
+        }
     }
+#endif
+    return logfd;
+}
+
+void writelog(const char *buf, size_t len)
+{
+    pthread_mutex_lock(&log_mtx);
+    write(getdev(), buf, len);
+    pthread_mutex_unlock(&log_mtx);
 }
 
 void readlog(char *buf, size_t len)
 {
-#if USE_AESD_CHAR_DEVICE
-    if (logfd == ERROR)
-        logfd = open("/dev/aesdchar", O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
-#endif
-
-    if (logfd != ERROR)
-    {
-        pthread_mutex_lock(&log_mtx);
-        read(logfd, buf, len);
-        pthread_mutex_unlock(&log_mtx);
-    }
+    pthread_mutex_lock(&log_mtx);
+    read(getdev(), buf, len);
+    pthread_mutex_unlock(&log_mtx);
 }
 
 void signalhandler(int signo)
@@ -88,13 +90,13 @@ void timeouthandler(int signo)
     alarm(10);
 }
 
-void sendreply(int recvfd)
+void sendreply(int recvfd, const struct aesd_seekto *seekto)
 {
     if (logfd == ERROR)
         return;
 
     pthread_mutex_lock(&log_mtx);
-    off_t fsize = lseek(logfd, 0, SEEK_CUR);
+    off_t fsize = lseek(logfd, 0, SEEK_END);
     lseek(logfd, 0, SEEK_SET);
     pthread_mutex_unlock(&log_mtx);
 
@@ -103,6 +105,11 @@ void sendreply(int recvfd)
     {
         perror("malloc");
         return;
+    }
+
+    if (seekto->write_cmd)
+    {
+        ioctl(logfd, AESDCHAR_IOCSEEKTO, seekto);
     }
 
     readlog(data, fsize);
@@ -150,16 +157,35 @@ void *handle(void *arg)
         bytes_received = recv(recvfd, buf, sizeof buf, 0);
         if (bytes_received > 0)
         {
-            printf("\nServer received[%d]:", bytes_received);
-            writelog(buf, bytes_received);
-
+            bool completed = false;
+            printf("\nServer received[%d]: ", bytes_received);
             for (int i = 0; i < bytes_received; i++)
             {
                 printf("%c", buf[i]);
                 if ('\n' == buf[i])
                 {
-                    sendreply(recvfd);
+                    completed = true;
                 }
+            }
+
+            static const char ioctl_cmd[] = "AESDCHAR_IOCSEEKTO:";
+            static const size_t ioctl_cmd_len = sizeof(ioctl_cmd) - 1u;
+            struct aesd_seekto seekto = {.write_cmd = 0, .write_cmd_offset = 0};
+
+            if ((bytes_received > ioctl_cmd_len) &&
+                (memcmp(ioctl_cmd, buf, ioctl_cmd_len) == 0))
+            {
+                sscanf(buf, "AESDCHAR_IOCSEEKTO:%u,%u", &seekto.write_cmd, &seekto.write_cmd_offset);
+                printf("got ioctl seek command - write_cmd %u write_cmd_offset %u\n", seekto.write_cmd, seekto.write_cmd_offset);
+            }
+            else
+            {
+                writelog(buf, bytes_received);
+            }
+
+            if (completed)
+            {
+                sendreply(recvfd, &seekto);
             }
         }
         else
@@ -171,6 +197,8 @@ void *handle(void *arg)
     printf("Closed connection from %s\n", client_ip);
     syslog(LOG_INFO, "Closed connection from %s", client_ip);
     close(recvfd);
+    close(logfd);
+    logfd = ERROR;
     return NULL;
 }
 

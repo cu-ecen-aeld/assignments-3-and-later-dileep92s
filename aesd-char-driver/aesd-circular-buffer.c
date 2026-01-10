@@ -128,6 +128,49 @@ size_t aesd_circular_buffer_find_entry_offset_for_fpos_and_copy(struct aesd_circ
     return byteswritten;
 }
 
+long aesd_circular_buffer_find_offset(struct aesd_circular_buffer *buffer, uint32_t write_cmd, uint32_t write_cmd_offset)
+{
+#ifdef __KERNEL__
+    mutex_lock(&lock);
+#else
+    pthread_mutex_lock(&lock);
+#endif
+    long offset = 0;
+    uint8_t outoff = buffer->out_offs;
+
+    printk(KERN_ERR "offset %d outoff %d", offset, outoff);
+
+    while (write_cmd--)
+    {
+        if (buffer->entry[outoff].size == 0u)
+            return -1;
+
+        if (write_cmd)
+        {
+            printk(KERN_ERR "offset %d outoff %d size %d", offset, outoff, buffer->entry[outoff].size);
+            offset += buffer->entry[outoff].size;
+            outoff = (outoff + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+        }
+        else if (write_cmd_offset < buffer->entry[outoff].size)
+        {
+            printk(KERN_ERR "offset %d outoff %d size %d", offset, outoff, buffer->entry[outoff].size);
+            offset += write_cmd_offset;
+        }
+        else
+        {
+            printk(KERN_ERR "offset %d outoff %d size %d", offset, outoff, buffer->entry[outoff].size);
+            return -1;
+        }
+    }
+#ifdef __KERNEL__
+    mutex_unlock(&lock);
+#else
+    pthread_mutex_unlock(&lock);
+#endif
+    printk(KERN_ERR "offset %d", offset);
+    return offset;
+}
+
 /**
  * Adds entry @param add_entry to @param buffer in the location specified in buffer->in_offs.
  * If the buffer was already full, overwrites the oldest entry and advances buffer->out_offs to the
