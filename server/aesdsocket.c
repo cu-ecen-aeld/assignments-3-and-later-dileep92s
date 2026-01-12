@@ -52,18 +52,20 @@ int getdev()
     return logfd;
 }
 
-void writelog(const char *buf, size_t len)
+size_t writelog(const char *buf, size_t len)
 {
     pthread_mutex_lock(&log_mtx);
-    write(getdev(), buf, len);
+    len = write(getdev(), buf, len);
     pthread_mutex_unlock(&log_mtx);
+    return len;
 }
 
-void readlog(char *buf, size_t len)
+size_t readlog(char *buf, size_t len)
 {
     pthread_mutex_lock(&log_mtx);
-    read(getdev(), buf, len);
+    len = read(getdev(), buf, len);
     pthread_mutex_unlock(&log_mtx);
+    return len;
 }
 
 void signalhandler(int signo)
@@ -107,12 +109,12 @@ void sendreply(int recvfd, const struct aesd_seekto *seekto)
         return;
     }
 
-    if (seekto->write_cmd)
+    if (seekto->write_cmd || seekto->write_cmd_offset)
     {
         ioctl(logfd, AESDCHAR_IOCSEEKTO, seekto);
     }
 
-    readlog(data, fsize);
+    fsize = readlog(data, fsize);
 
     size_t sent = send(recvfd, data, fsize, 0);
     if (sent != fsize)
@@ -197,8 +199,6 @@ void *handle(void *arg)
     printf("Closed connection from %s\n", client_ip);
     syslog(LOG_INFO, "Closed connection from %s", client_ip);
     close(recvfd);
-    close(logfd);
-    logfd = ERROR;
     return NULL;
 }
 

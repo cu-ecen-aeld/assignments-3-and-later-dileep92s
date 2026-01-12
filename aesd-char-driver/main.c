@@ -121,7 +121,8 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
 {
     PDEBUG("read %zu bytes with offset %lld", count, *f_pos);
 
-    if (*f_pos >= get_available_data_size())
+    const size_t avail = get_available_data_size();
+    if (*f_pos >= avail)
         return 0;
 
     ssize_t retval = 0;
@@ -237,7 +238,7 @@ loff_t aesd_seek(struct file *filp, loff_t off, int type)
 
 long aesd_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
-    PDEBUG("ioctrl cmd %u %lu\n", cmd, arg);
+    printk( KERN_ERR "aesdchar: ioctrl cmd %u %lu\n", cmd, arg);
     switch (cmd)
     {
     case AESDCHAR_IOCSEEKTO:

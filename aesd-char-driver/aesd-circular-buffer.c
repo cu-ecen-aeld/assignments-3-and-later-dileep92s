@@ -104,6 +104,8 @@ size_t aesd_circular_buffer_find_entry_offset_for_fpos_and_copy(struct aesd_circ
         cnt++;
     }
 
+    printk(KERN_ERR "outoff %d inoff %d idx %d entry_offset_byte %d", buffer->out_offs, buffer->in_offs, idx, entry_offset_byte);
+
     if (cnt == AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)
         return byteswritten;
 
@@ -112,13 +114,19 @@ size_t aesd_circular_buffer_find_entry_offset_for_fpos_and_copy(struct aesd_circ
     {
         size_t bytestowrite = entry[idx].size - entry_offset_byte;
         bytestowrite = (count - byteswritten) < bytestowrite ? (count - byteswritten) : bytestowrite;
+        printk(KERN_ERR "bytestoread %d", bytestowrite);
         memcpy(outbuffer + byteswritten, entry[idx].buffptr + entry_offset_byte, bytestowrite);
         byteswritten += bytestowrite;
         entry_offset_byte = 0;
         idx += 1;
         idx %= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
         cnt++;
+
+        if (buffer->in_offs == idx)
+            break;
     }
+
+    printk(KERN_ERR "byteswritten %d", byteswritten);
 
 #ifdef __KERNEL__
     mutex_unlock(&lock);
@@ -140,26 +148,30 @@ long aesd_circular_buffer_find_offset(struct aesd_circular_buffer *buffer, uint3
 
     printk(KERN_ERR "offset %d outoff %d", offset, outoff);
 
-    while (write_cmd--)
+    while (write_cmd >= 0)
     {
         if (buffer->entry[outoff].size == 0u)
             return -1;
 
-        if (write_cmd)
+        if (write_cmd > 0)
         {
             printk(KERN_ERR "offset %d outoff %d size %d", offset, outoff, buffer->entry[outoff].size);
             offset += buffer->entry[outoff].size;
             outoff = (outoff + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+            write_cmd--;
         }
-        else if (write_cmd_offset < buffer->entry[outoff].size)
+        else if (write_cmd == 0)
         {
             printk(KERN_ERR "offset %d outoff %d size %d", offset, outoff, buffer->entry[outoff].size);
-            offset += write_cmd_offset;
-        }
-        else
-        {
-            printk(KERN_ERR "offset %d outoff %d size %d", offset, outoff, buffer->entry[outoff].size);
-            return -1;
+            if (write_cmd_offset < buffer->entry[outoff].size)
+            {
+                offset += write_cmd_offset;
+                break;
+            }
+            else
+            {
+                return -1;
+            }
         }
     }
 #ifdef __KERNEL__
